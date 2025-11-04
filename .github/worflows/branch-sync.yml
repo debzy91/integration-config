@@ -23,8 +23,10 @@ env:
 
 jobs:
   create-sync-prs:
+    name: Auto PR Creation for Higher Envs   # ✅ gives a visible name in Checks UI
     runs-on: ubuntu-latest
     if: github.event_name == 'push'
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -69,7 +71,6 @@ jobs:
             const lob = match[1];
             const env = match[2];
 
-            // find index of current env
             const currentIndex = chain.indexOf(env);
             if (currentIndex === -1) {
               console.log(`Environment '${env}' not found in promotion chain.`);
@@ -84,16 +85,13 @@ jobs:
             for (const nextEnv of higherEnvs) {
               const syncBranch = `fb_${lob}_sync_${nextEnv}`;
               const targetBranch = nextEnv;
-              const title = `[auto-sync] ${syncBranch} → ${targetBranch}`;
+              const title = `[auto-sync] ${branch} → ${targetBranch}`;
               const body = `Automated cascade sync PR from **${branch}** → **${targetBranch}**.\n\nSync branch: \`${syncBranch}\``;
 
               console.log(`🔄 Creating/updating sync branch '${syncBranch}' for target '${targetBranch}'`);
 
               try {
-                // fetch branches to ensure up-to-date
                 execSync(`git fetch origin ${branch} ${targetBranch} || true`, {stdio: 'inherit'});
-
-                // force update sync branch to latest commit of source branch
                 const sha = execSync(`git rev-parse origin/${branch}`).toString().trim();
                 execSync(`git push origin ${sha}:refs/heads/${syncBranch} --force`, {stdio: 'inherit'});
                 console.log(`✅ Updated sync branch ${syncBranch} -> ${sha}`);
@@ -101,7 +99,6 @@ jobs:
                 console.error(`⚠️ Failed to update sync branch ${syncBranch}: ${err.message}`);
               }
 
-              // check if PR already exists
               const prs = await github.rest.pulls.list({
                 owner, repo, head: `${owner}:${syncBranch}`, base: targetBranch, state: 'open'
               });
@@ -122,9 +119,10 @@ jobs:
             }
 
   dependency-check:
+    name: Dependency: Merge Sequence Validation ✅   # ✅ shows in branch protection dropdown
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
-    name: merge-sequence-check
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -157,10 +155,10 @@ jobs:
 
           git fetch origin +refs/heads/${DEP}:refs/remotes/origin/${DEP}
           git fetch origin +refs/heads/${TARGET}:refs/remotes/origin/${TARGET}
+
           if git merge-base --is-ancestor origin/${DEP} origin/${TARGET}; then
             echo "✅ Dependency satisfied: ${DEP} merged into ${TARGET}"
           else
             echo "❌ Dependency NOT satisfied: ${DEP} not merged into ${TARGET}"
             exit 1
           fi
-
