@@ -119,7 +119,7 @@ jobs:
             }
 
   dependency-check:
-    name: Dependency: Merge Sequence Validation ✅   # ✅ shows in branch protection dropdown
+    name: Merge Sequence Validation ✅   # ✅ shows in branch protection dropdown
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
 
