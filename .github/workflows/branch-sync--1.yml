@@ -1,0 +1,164 @@
+name: Branch Sync & Dependency Cascade
+
+on:
+  push:
+    branches:
+      - 'fb_*_*'   # LOB branches like fb_concur_dev
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+    branches:
+      - 'dev'
+      - 'staging'
+      - 'main'
+      - 'internal-prod'
+
+permissions:
+  contents: write
+  pull-requests: write
+  statuses: write
+  checks: write
+
+env:
+  PROMOTION_CHAIN: "dev,staging,main,internal-prod"
+
+jobs:
+  create-sync-prs:
+    name: Auto PR Creation for Higher Envs   # ✅ gives a visible name in Checks UI
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Parse branch and LOB
+        id: parse
+        run: |
+          BRANCH="${GITHUB_REF#refs/heads/}"
+          echo "branch=${BRANCH}" >> $GITHUB_OUTPUT
+
+          if [[ "$BRANCH" =~ ^fb_([^_]+)_([^_]+)$ ]]; then
+            LOB="${BASH_REMATCH[1]}"
+            ENV="${BASH_REMATCH[2]}"
+            echo "lob=${LOB}" >> $GITHUB_OUTPUT
+            echo "env=${ENV}" >> $GITHUB_OUTPUT
+          else
+            echo "lob=UNKNOWN" >> $GITHUB_OUTPUT
+            echo "env=UNKNOWN" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Set up git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Create cascading PRs for all higher environments
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const branch = process.env.GITHUB_REF.replace('refs/heads/', '');
+            const chain = process.env.PROMOTION_CHAIN.split(',');
+            const match = branch.match(/^fb_([^_]+)_([^_]+)$/);
+            if (!match) {
+              console.log(`❌ Branch ${branch} does not match pattern fb_<lob>_<env>. Exiting.`);
+              return;
+            }
+            const lob = match[1];
+            const env = match[2];
+
+            const currentIndex = chain.indexOf(env);
+            if (currentIndex === -1) {
+              console.log(`Environment '${env}' not found in promotion chain.`);
+              return;
+            }
+
+            const higherEnvs = chain.slice(currentIndex + 1);
+            console.log(`Detected higher environments to sync: ${higherEnvs.join(', ')}`);
+
+            const execSync = require('child_process').execSync;
+
+            for (const nextEnv of higherEnvs) {
+              const syncBranch = `fb_${lob}_sync_${nextEnv}`;
+              const targetBranch = nextEnv;
+              const title = `[auto-sync] ${branch} → ${targetBranch}`;
+              const body = `Automated cascade sync PR from **${branch}** → **${targetBranch}**.\n\nSync branch: \`${syncBranch}\``;
+
+              console.log(`🔄 Creating/updating sync branch '${syncBranch}' for target '${targetBranch}'`);
+
+              try {
+                execSync(`git fetch origin ${branch} ${targetBranch} || true`, {stdio: 'inherit'});
+                const sha = execSync(`git rev-parse origin/${branch}`).toString().trim();
+                execSync(`git push origin ${sha}:refs/heads/${syncBranch} --force`, {stdio: 'inherit'});
+                console.log(`✅ Updated sync branch ${syncBranch} -> ${sha}`);
+              } catch (err) {
+                console.error(`⚠️ Failed to update sync branch ${syncBranch}: ${err.message}`);
+              }
+
+              const prs = await github.rest.pulls.list({
+                owner, repo, head: `${owner}:${syncBranch}`, base: targetBranch, state: 'open'
+              });
+
+              if (prs.data.length > 0) {
+                console.log(`ℹ️ Existing PR found for ${syncBranch} → ${targetBranch}: ${prs.data[0].html_url}`);
+              } else {
+                console.log(`📤 Creating new PR: ${title}`);
+                try {
+                  const pr = await github.rest.pulls.create({
+                    owner, repo, title, head: syncBranch, base: targetBranch, body,
+                  });
+                  console.log(`✅ Created PR: ${pr.data.html_url}`);
+                } catch (err) {
+                  console.error(`❌ Failed to create PR from ${syncBranch} → ${targetBranch}: ${err.message}`);
+                }
+              }
+            }
+
+  dependency-check:
+    name: Merge Sequence Validation ✅   # ✅ shows in branch protection dropdown
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine dependency
+        id: dep
+        run: |
+          TARGET="${{ github.event.pull_request.base.ref }}"
+          CHAIN=(dev staging main internal-prod)
+          DEP=""
+          for i in "${!CHAIN[@]}"; do
+            if [[ "${CHAIN[$i]}" == "$TARGET" && $i -gt 0 ]]; then
+              DEP="${CHAIN[$((i-1))]}"
+            fi
+          done
+          echo "dependency=${DEP}" >> $GITHUB_OUTPUT
+          echo "target=${TARGET}" >> $GITHUB_OUTPUT
+
+      - name: Validate dependency merged
+        id: check
+        run: |
+          DEP="${{ steps.dep.outputs.dependency }}"
+          TARGET="${{ steps.dep.outputs.target }}"
+          if [ -z "$DEP" ]; then
+            echo "No dependency for ${TARGET} (first env)."
+            exit 0
+          fi
+
+          git fetch origin +refs/heads/${DEP}:refs/remotes/origin/${DEP}
+          git fetch origin +refs/heads/${TARGET}:refs/remotes/origin/${TARGET}
+
+          if git merge-base --is-ancestor origin/${DEP} origin/${TARGET}; then
+            echo "✅ Dependency satisfied: ${DEP} merged into ${TARGET}"
+          else
+            echo "❌ Dependency NOT satisfied: ${DEP} not merged into ${TARGET}"
+            exit 1
+          fi
