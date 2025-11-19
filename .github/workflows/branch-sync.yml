@@ -38,8 +38,8 @@ jobs:
           BRANCH="${GITHUB_REF#refs/heads/}"
           echo "branch=${BRANCH}" >> $GITHUB_OUTPUT
 
-          # Pattern = fb_<lob>_dev ONLY
-          if [[ "$BRANCH" =~ ^fb_([^_]+)_dev$ ]]; then
+          # Updated regex: allows letters, numbers, hyphens
+          if [[ "$BRANCH" =~ ^fb_([a-zA-Z0-9-]+)_dev$ ]]; then
             LOB="${BASH_REMATCH[1]}"
             echo "lob=${LOB}" >> $GITHUB_OUTPUT
           else
@@ -66,11 +66,16 @@ jobs:
             const branch = process.env.GITHUB_REF.replace('refs/heads/', '');
             const chain = ["dev","staging","main","internal-prod"];
 
-            // always treat source env as 'dev'
-            const env = "dev"; 
-            const match = branch.match(/^fb_([^_]+)_dev$/);
-            const lob = match[1];
+            // JS regex FIXED to match bash
+            const match = branch.match(/^fb_([a-zA-Z0-9-]+)_dev$/);
 
+            if (!match) {
+              console.log("❌ JS Regex failed. Branch: " + branch);
+              return;
+            }
+
+            const lob = match[1];
+            const env = "dev";
             const currentIndex = chain.indexOf(env);
             const higherEnvs = chain.slice(currentIndex + 1);
 
