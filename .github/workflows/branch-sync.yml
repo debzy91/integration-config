@@ -98,7 +98,7 @@ jobs:
             }
 
   dependency-check:
-    name: Merge Sequence Validation
+    name: My Merge Sequence Validation
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
 
