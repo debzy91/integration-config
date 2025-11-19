@@ -3,7 +3,7 @@ name: Branch Sync & Dependency Cascade
 on:
   push:
     branches:
-      - 'fb_*_dev'    # ONLY feature branches for dev
+      - 'fb_**'    # ONLY feature branches for dev
   pull_request:
     types: [opened, reopened, synchronize, ready_for_review]
     branches:
